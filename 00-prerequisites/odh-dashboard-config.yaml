@@ -1,0 +1,27 @@
+# ODH Dashboard Configuration
+# Enables GenAI Studio, Model Registry, and other dashboard features
+#
+# Apply: oc apply -f odh-dashboard-config.yaml
+# Verify: oc get odhdashboardconfig -n redhat-ods-applications
+#
+# Reference: https://rhpds.github.io/redhat-openshift-ai-3-showroom/modules/03-01-odh-dashboard.html
+
+apiVersion: opendatahub.io/v1alpha
+kind: OdhDashboardConfig
+metadata:
+  name: odh-dashboard-config
+  namespace: redhat-ods-applications
+spec:
+  dashboardConfig:
+    disableTracking: false
+    disableModelRegistry: false
+    disableModelCatalog: false
+    disableKServeMetrics: false
+    genAiStudio: true           # Enable GenAI Playground
+    modelAsService: true        # Enable Model-as-a-Service
+    disableLMEval: false
+  notebookController:
+    enabled: true
+    notebookNamespace: rhods-notebooks
+    pvcSize: 20Gi
+

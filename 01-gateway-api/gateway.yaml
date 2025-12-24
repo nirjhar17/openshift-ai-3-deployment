@@ -1,0 +1,39 @@
+# Gateway Resource
+# Creates LoadBalancer service with HTTPS termination for model inference
+#
+# Apply: oc apply -f gateway.yaml
+# Verify: oc get gateway -n openshift-ingress
+# Get URL: oc get gateway openshift-ai-inference -n openshift-ingress -o jsonpath='{.status.addresses[0].value}'
+
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: openshift-ai-inference
+  namespace: openshift-ingress
+  labels:
+    istio.io/rev: openshift-gateway
+    platform.opendatahub.io/part-of: gatewayconfig
+spec:
+  gatewayClassName: openshift-ai-inference
+  listeners:
+    # HTTP listener (port 80)
+    - name: http
+      port: 80
+      protocol: HTTP
+      allowedRoutes:
+        namespaces:
+          from: All
+    
+    # HTTPS listener (port 443) with TLS termination
+    - name: https
+      port: 443
+      protocol: HTTPS
+      allowedRoutes:
+        namespaces:
+          from: All
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - kind: Secret
+            name: default-gateway-tls  # OpenShift auto-generated certificate
+

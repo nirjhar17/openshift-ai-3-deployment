@@ -1,0 +1,107 @@
+# LLMInferenceService - Disaggregated LLM Deployment
+# Deploys Qwen3-0.6B model with LLM-D architecture for intelligent request routing
+#
+# Apply: oc apply -f llminferenceservice.yaml
+# Verify: oc get llminferenceservice -n my-first-model
+# Get URL: oc get llminferenceservice qwen3-0-6b -n my-first-model -o jsonpath='{.status.url}'
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: my-first-model
+  labels:
+    openshift.io/cluster-monitoring: "true"
+---
+apiVersion: serving.kserve.io/v1alpha1
+kind: LLMInferenceService
+metadata:
+  name: qwen3-0-6b
+  namespace: my-first-model
+  annotations:
+    # Hardware profile reference
+    opendatahub.io/hardware-profile-name: gpu-profile
+    opendatahub.io/hardware-profile-namespace: redhat-ods-applications
+    # Authentication mode: "false" = anonymous, remove annotation = token required
+    security.opendatahub.io/enable-auth: "false"
+spec:
+  # Number of vLLM replicas (each needs 1 GPU)
+  replicas: 2
+  
+  # Model configuration
+  model:
+    uri: hf://Qwen/Qwen3-0.6B
+    name: Qwen/Qwen3-0.6B
+  
+  # Router configuration (EPP Scheduler)
+  router:
+    scheduler:
+      template:
+        containers:
+          - name: main
+            env:
+              - name: TOKENIZER_CACHE_DIR
+                value: /tmp/tokenizer-cache
+              - name: HF_HOME
+                value: /tmp/tokenizer-cache
+            args:
+              - --pool-group
+              - inference.networking.x-k8s.io
+              - --pool-name
+              - '{{ ChildName .ObjectMeta.Name `-inference-pool` }}'
+              - --pool-namespace
+              - '{{ .ObjectMeta.Namespace }}'
+              - --config-text
+              - |
+                apiVersion: inference.networking.x-k8s.io/v1alpha1
+                kind: EndpointPickerConfig
+                plugins:
+                - type: queue-scorer
+                - type: kv-cache-utilization-scorer
+                - type: prefix-cache-scorer
+                schedulingProfiles:
+                - name: default
+                  plugins:
+                  - pluginRef: queue-scorer
+                    weight: 2
+                  - pluginRef: kv-cache-utilization-scorer
+                    weight: 2
+                  - pluginRef: prefix-cache-scorer
+                    weight: 3
+            volumeMounts:
+              - name: tokenizer-cache
+                mountPath: /tmp/tokenizer-cache
+        volumes:
+          - name: tokenizer-cache
+            emptyDir: {}
+    route: {}
+    gateway: {}
+  
+  # vLLM Pod template
+  template:
+    tolerations:
+      - key: "nvidia.com/gpu"
+        operator: "Exists"
+        effect: "NoSchedule"
+    containers:
+      - name: main
+        # Use upstream vLLM image for Tesla T4 compatibility
+        image: vllm/vllm-openai:v0.8.4
+        env:
+          # Disable V1 engine (requires compute capability 8.0+)
+          - name: VLLM_USE_V1
+            value: "0"
+          - name: HF_HOME
+            value: "/tmp/hf_home"
+          # Additional vLLM arguments for Tesla T4
+          - name: VLLM_ADDITIONAL_ARGS
+            value: "--dtype=half --max-model-len=4096 --gpu-memory-utilization=0.85 --enforce-eager"
+        resources:
+          limits:
+            cpu: '2'
+            memory: 12Gi
+            nvidia.com/gpu: "1"
+          requests:
+            cpu: '1'
+            memory: 8Gi
+            nvidia.com/gpu: "1"
+

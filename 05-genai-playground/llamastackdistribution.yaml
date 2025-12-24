@@ -1,0 +1,55 @@
+# LlamaStackDistribution - GenAI Playground
+# Deploys a web-based chat interface for interacting with deployed models
+#
+# Apply: oc apply -f llamastackdistribution.yaml
+# Verify: oc get llamastackdistribution -n my-first-model
+# Access: Via OpenShift AI Dashboard -> Gen AI Studio
+
+apiVersion: llamastack.opendatahub.io/v1
+kind: LlamaStackDistribution
+metadata:
+  name: lsd-genai-playground
+  namespace: my-first-model
+  labels:
+    opendatahub.io/dashboard: "true"
+spec:
+  # LlamaStack server image
+  image: quay.io/opendatahub/llama-stack-server:latest
+  
+  # Configuration
+  config:
+    # API endpoints to enable
+    apis:
+      - agents
+      - datasetio
+      - files
+      - inference
+      - safety
+      - scoring
+      - tool_runtime
+      - vector_io
+    
+    # Model providers
+    providers:
+      inference:
+        - provider_id: vllm-inference-1
+          provider_type: remote::vllm
+          config:
+            url: http://qwen3-0-6b-kserve-workload-svc.my-first-model.svc.cluster.local:8000/v1
+            api_token: ${env.VLLM_API_TOKEN_1:=fake}
+            max_tokens: ${env.VLLM_MAX_TOKENS:=4096}
+            tls_verify: false
+    
+    # Model registration
+    models:
+      - provider_id: vllm-inference-1
+        model_id: qwen3-0-6b
+        model_type: llm
+        metadata:
+          description: "Qwen3 0.6B model deployed with LLM-D"
+          display_name: qwen3-0-6b
+    
+    # Server configuration
+    server:
+      port: 8321
+

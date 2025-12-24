@@ -1,0 +1,17 @@
+# Kuadrant CR
+# Activates the Kuadrant system (Authorino for auth, Limitador for rate limiting)
+# Requires: Red Hat Connectivity Link Operator installed
+#
+# Apply: oc apply -f kuadrant.yaml
+# Verify: oc get kuadrant -n kuadrant-system
+
+apiVersion: kuadrant.io/v1beta1
+kind: Kuadrant
+metadata:
+  name: kuadrant
+  namespace: kuadrant-system
+spec: {}
+  # Optional: Enable mTLS (if supported by your RHCL version)
+  # mtls:
+  #   authorino: true
+

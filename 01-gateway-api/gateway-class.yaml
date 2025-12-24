@@ -1,0 +1,16 @@
+# GatewayClass Definition
+# Defines the controller that manages Gateway resources
+#
+# Apply: oc apply -f gateway-class.yaml
+# Verify: oc get gatewayclass
+
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: openshift-ai-inference
+  labels:
+    platform.opendatahub.io/part-of: gatewayconfig
+spec:
+  # OpenShift's built-in Gateway controller
+  controllerName: openshift.io/gateway-controller/v1
+

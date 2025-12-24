@@ -1,0 +1,50 @@
+# DataScienceCluster Configuration
+# Enables OpenShift AI components including KServe, Dashboard, and LlamaStack Operator
+#
+# Apply: oc apply -f datasciencecluster.yaml
+# Verify: oc get datasciencecluster default-dsc -o yaml
+
+apiVersion: datasciencecluster.opendatahub.io/v1
+kind: DataScienceCluster
+metadata:
+  name: default-dsc
+spec:
+  components:
+    # KServe - Model serving platform (required for LLM-D)
+    kserve:
+      managementState: Managed
+      serving:
+        ingressGateway:
+          certificate:
+            type: SelfSigned
+        managementState: Managed
+        name: knative-serving
+    
+    # Dashboard - OpenShift AI web interface
+    dashboard:
+      managementState: Managed
+    
+    # LlamaStack Operator - GenAI Playground support
+    llamastackoperator:
+      managementState: Managed
+    
+    # Model Registry - Model versioning and tracking
+    modelregistry:
+      managementState: Managed
+    
+    # Ray - Distributed computing (optional)
+    ray:
+      managementState: Managed
+    
+    # Workbenches - Jupyter notebooks
+    workbenches:
+      managementState: Managed
+    
+    # CodeFlare - Distributed training
+    codeflare:
+      managementState: Managed
+    
+    # Training Operator - Model training
+    trainingoperator:
+      managementState: Managed
+
