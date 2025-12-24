@@ -90,58 +90,25 @@ Traditional LLM serving runs the entire inference (prefill + decode) on a single
 
 ### Required Operators
 
-Install these operators from OperatorHub before proceeding:
+Install these operators from **OperatorHub** in the OpenShift Web Console:
 
-| Operator | Channel | Namespace | Purpose |
-|----------|---------|-----------|---------|
-| **Red Hat OpenShift AI** | `fast-3.x` | `redhat-ods-operator` | Core AI/ML platform with KServe |
-| **NVIDIA GPU Operator** | `v25.10` | `nvidia-gpu-operator` | GPU device plugin & drivers |
-| **Red Hat Connectivity Link** | `stable` | `kuadrant-system` | API gateway, auth & rate limiting |
+| Operator | Channel | Purpose |
+|----------|---------|---------|
+| **Red Hat OpenShift AI** | `fast-3.x` | Core AI/ML platform with KServe |
+| **NVIDIA GPU Operator** | `v25.10` | GPU device plugin & drivers |
+| **Red Hat Connectivity Link** | `stable` | API gateway, auth & rate limiting |
 
-#### Install Operators via CLI
+#### Installation Steps (OpenShift Console)
 
-```yaml
-# operators.yaml
----
-apiVersion: operators.coreos.com/v1alpha1
-kind: Subscription
-metadata:
-  name: rhods-operator
-  namespace: redhat-ods-operator
-spec:
-  channel: fast-3.x
-  name: rhods-operator
-  source: redhat-operators
-  sourceNamespace: openshift-marketplace
----
-apiVersion: operators.coreos.com/v1alpha1
-kind: Subscription
-metadata:
-  name: gpu-operator-certified
-  namespace: nvidia-gpu-operator
-spec:
-  channel: v25.10
-  name: gpu-operator-certified
-  source: certified-operators
-  sourceNamespace: openshift-marketplace
----
-apiVersion: operators.coreos.com/v1alpha1
-kind: Subscription
-metadata:
-  name: rhcl-operator
-  namespace: kuadrant-system
-spec:
-  channel: stable
-  name: rhcl-operator
-  source: redhat-operators
-  sourceNamespace: openshift-marketplace
-```
+1. Navigate to **Operators → OperatorHub**
+2. Search for each operator by name
+3. Click **Install** and select the appropriate channel
+4. Wait for the operator to show **Succeeded** status
 
-Apply and verify:
+#### Verify Installation
+
 ```bash
-oc apply -f operators.yaml
-
-# Wait for operators to be ready
+# Check all operators are installed and ready
 oc get csv -A | grep -E "rhods|gpu|rhcl"
 ```
 
@@ -583,20 +550,20 @@ curl https://<GATEWAY_URL>/my-first-model/qwen3-0-6b/v1/models
 
 ### Token-Based Access
 
-Remove the annotation to require Kubernetes tokens:
+Remove the `enable-auth` annotation to require Kubernetes tokens:
 
 ```yaml
 metadata:
   annotations:
-    # Remove or set to "true"
+    # Remove this line to enable token-based auth
     # security.opendatahub.io/enable-auth: "false"
 ```
 
-Then users need to provide a token:
+Then users need to provide their OpenShift token:
 
 ```bash
-TOKEN=$(oc whoami -t)
-curl -H "Authorization: Bearer $TOKEN" \
+# Get your token and make request
+curl -H "Authorization: Bearer $(oc whoami -t)" \
   https://<GATEWAY_URL>/my-first-model/qwen3-0-6b/v1/models
 ```
 
