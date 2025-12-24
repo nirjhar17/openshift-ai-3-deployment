@@ -299,11 +299,58 @@ oc get pods -n my-first-model
 oc get authpolicy -A
 ```
 
+## Troubleshooting
+
+### TLS Issues
+
+If you encounter TLS/500 errors when authentication is enabled:
+
+1. **Check Authorino TLS annotation**:
+   ```bash
+   oc get svc authorino-authorino-authorization -n kuadrant-system -o yaml | grep serving-cert
+   ```
+   
+2. **Add TLS annotation if missing**:
+   ```bash
+   oc annotate svc authorino-authorino-authorization -n kuadrant-system \
+     service.beta.openshift.io/serving-cert-secret-name=authorino-tls
+   ```
+
+3. **Restart Authorino**:
+   ```bash
+   oc rollout restart deployment authorino -n kuadrant-system
+   ```
+
+### Model Not Starting
+
+1. **Check pod logs**:
+   ```bash
+   oc logs -n my-first-model -l app=qwen3-0-6b --tail=100
+   ```
+
+2. **Common issues on Tesla T4**:
+   - `bfloat16 not supported` → Add `--dtype=half`
+   - `V1 engine failed` → Set `VLLM_USE_V1=0`
+   - `OOMKilled` → Increase memory limit to 12Gi
+
+### Gateway Not Routing
+
+1. **Check HTTPRoute**:
+   ```bash
+   oc get httproute -n my-first-model -o yaml
+   ```
+
+2. **Check Gateway allows all namespaces**:
+   ```bash
+   oc get gateway openshift-ai-inference -n openshift-ingress -o yaml | grep -A 5 allowedRoutes
+   ```
+
 ## References
 
 - [OpenShift AI 3.0 Showroom](https://rhpds.github.io/redhat-openshift-ai-3-showroom/modules/00-00-intro.html)
 - [OpenShift AI 3.0 Documentation](https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/3.0)
-- [MaaS Billing Setup](https://opendatahub-io.github.io/maas-billing/install/maas-setup/)
+- [MaaS Documentation](https://opendatahub-io.github.io/models-as-a-service/) - Model-as-a-Service Platform
+- [MaaS GitHub Repository](https://github.com/opendatahub-io/models-as-a-service)
 - [Kuadrant Documentation](https://kuadrant.io/)
 - [vLLM Documentation](https://docs.vllm.ai/)
 - [Gateway API Documentation](https://gateway-api.sigs.k8s.io/)
