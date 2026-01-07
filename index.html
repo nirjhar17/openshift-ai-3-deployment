@@ -16,6 +16,10 @@
         strong { font-weight: 600; }
         em { font-style: italic; }
         hr { border: none; border-top: 1px solid #eee; margin: 2em 0; }
+        table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+        th { background: #f4f4f4; }
+        .warning { background: #fff3cd; border-left: 4px solid #ffc107; padding: 12px; margin: 1em 0; }
     </style>
 </head>
 <body>
@@ -33,11 +37,13 @@
 
 <p>In this blog, I'll walk you through deploying an LLM on OpenShift AI 3.0 from scratch — setting up the Gateway for secure HTTPS access, enabling authentication, and handling real-world GPU compatibility issues with Tesla T4. By the end, you'll have a production-ready model endpoint with automatic TLS, intelligent load balancing, and enterprise-grade security.</p>
 
+<p>This blog focuses on deploying your first model with secure HTTPS access. We'll explain how Kuadrant automatically creates AuthPolicies when you deploy an LLMInferenceService — you don't need to write them manually. In <strong>Part 2</strong>, we'll build on this foundation with RateLimitPolicy for tiered access control, DNSPolicy for custom domain management, and the GenAI Playground with MCP servers.</p>
+
 <p><strong>What we'll cover:</strong></p>
 <ul>
 <li>Setting up the required operators</li>
 <li>Configuring Gateway API for external access</li>
-<li>Enabling authentication with Kuadrant</li>
+<li>Enabling Kuadrant and understanding automatic AuthPolicy creation</li>
 <li>Handling TLS certificates</li>
 <li>Overcoming GPU compatibility challenges (Tesla T4)</li>
 </ul>
@@ -89,11 +95,16 @@
 
 <h3>Required Operators</h3>
 <p>Install these operators from <strong>OperatorHub</strong> in the OpenShift Web Console:</p>
-<ul>
-<li><strong>Red Hat OpenShift AI</strong> (Channel: fast-3.x) — Core AI/ML platform with KServe</li>
-<li><strong>NVIDIA GPU Operator</strong> (Channel: v25.10) — GPU device plugin & drivers</li>
-<li><strong>Red Hat Connectivity Link</strong> (Channel: stable) — API gateway, auth & rate limiting</li>
-</ul>
+
+<table>
+<tr><th>Operator</th><th>Channel</th><th>Purpose</th></tr>
+<tr><td><strong>Red Hat OpenShift AI</strong></td><td>fast-3.x</td><td>Core AI/ML platform with KServe</td></tr>
+<tr><td><strong>NVIDIA GPU Operator</strong></td><td>v25.10</td><td>GPU device plugin & drivers</td></tr>
+<tr><td><strong>Red Hat Connectivity Link</strong></td><td>stable</td><td>API gateway, auth & rate limiting (Kuadrant)</td></tr>
+<tr><td><strong>Red Hat OpenShift Service Mesh</strong></td><td>stable</td><td>Istio service mesh for traffic management</td></tr>
+<tr><td><strong>Red Hat OpenShift Serverless</strong></td><td>stable</td><td>Knative for serverless inference scaling</td></tr>
+<tr><td><strong>Node Feature Discovery</strong></td><td>stable</td><td>Detects hardware features (GPUs, CPUs)</td></tr>
+</table>
 
 <h4>Installation Steps (OpenShift Console)</h4>
 <ol>
@@ -102,6 +113,10 @@
 <li>Click <strong>Install</strong> and select the appropriate channel</li>
 <li>Wait for the operator to show <strong>Succeeded</strong> status</li>
 </ol>
+
+<h4>Verify Installation</h4>
+<pre><code># Check all operators are installed and ready
+oc get csv -A | grep -E "rhods|gpu|rhcl|servicemesh|serverless|nfd"</code></pre>
 
 <hr>
 
@@ -118,7 +133,7 @@ spec:
     dashboard:
       managementState: Managed
     llamastackoperator:
-      managementState: Managed</code></pre>
+      managementState: Managed  # Enables GenAI Playground</code></pre>
 
 <hr>
 
@@ -145,15 +160,30 @@ spec:
     - name: https
       port: 443
       protocol: HTTPS
+      allowedRoutes:
+        namespaces:
+          from: All
       tls:
         mode: Terminate
         certificateRefs:
           - kind: Secret
             name: default-gateway-tls</code></pre>
 
+<h3>Understanding TLS Configuration</h3>
+<p><strong>The TLS certificate (<code>default-gateway-tls</code>)</strong> is automatically created by OpenShift when you create a Gateway:</p>
+<ol>
+<li>OpenShift's Gateway Controller detects your Gateway resource</li>
+<li>It creates a LoadBalancer service (AWS ELB in our case)</li>
+<li>It generates a TLS certificate and stores it in a Secret</li>
+<li>The certificate is used for HTTPS termination at the Gateway</li>
+</ol>
+
 <hr>
 
-<h2>Step 3: Enable Kuadrant Authentication</h2>
+<h2>Step 3: Enable Kuadrant and AuthPolicy</h2>
+<p>Kuadrant provides authentication and rate limiting for your APIs. When you deploy an LLMInferenceService, the <strong>ODH Model Controller automatically creates AuthPolicies</strong> — you don't need to write them manually.</p>
+
+<h3>Create Kuadrant Resource</h3>
 <pre><code>apiVersion: kuadrant.io/v1beta1
 kind: Kuadrant
 metadata:
@@ -161,9 +191,51 @@ metadata:
   namespace: kuadrant-system
 spec: {}</code></pre>
 
-<h3>Enable Authorino TLS (Important!)</h3>
+<p>This creates:</p>
+<ul>
+<li><strong>Authorino</strong>: Handles authentication (validates tokens)</li>
+<li><strong>Limitador</strong>: Handles rate limiting</li>
+</ul>
+
+<h3>How AuthPolicy is Automatically Created</h3>
+<p>When you deploy an <code>LLMInferenceService</code>, the ODH Model Controller automatically creates two AuthPolicies:</p>
+<ol>
+<li><strong>Gateway-level AuthPolicy</strong> (<code>openshift-ai-inference-authn</code>): Applies to all traffic through the Gateway</li>
+<li><strong>HTTPRoute-level AuthPolicy</strong> (<code>&lt;model-name&gt;-kserve-route-authn</code>): Specific to your model</li>
+</ol>
+
+<pre><code># Check AuthPolicies
+oc get authpolicy -A
+
+# Example output:
+# NAMESPACE          NAME                               TARGETREF KIND   TARGETREF NAME
+# openshift-ingress  openshift-ai-inference-authn       Gateway          openshift-ai-inference
+# my-first-model     qwen3-0-6b-kserve-route-authn      HTTPRoute        qwen3-0-6b-kserve-route</code></pre>
+
+<h3>Authentication Modes</h3>
+<p>The <code>security.opendatahub.io/enable-auth</code> annotation controls how AuthPolicy is configured:</p>
+<table>
+<tr><th>Setting</th><th>AuthPolicy Created</th><th>Access</th></tr>
+<tr><td><code>"false"</code></td><td>Anonymous (<code>public: anonymous: {}</code>)</td><td>Anyone can access without token</td></tr>
+<tr><td>Not set (default)</td><td>Token-based (<code>kubernetesTokenReview</code>)</td><td>Requires valid K8s token</td></tr>
+</table>
+
+<h3>Enable Authorino TLS (For Token-Based Auth)</h3>
+<div class="warning">
+<strong>⚠️ When to use this:</strong> If you want token-based authentication (remove <code>enable-auth: false</code>), you need to enable TLS for Authorino. If you're using anonymous access (<code>enable-auth: false</code>), you can skip this step.
+</div>
+
 <pre><code>oc annotate svc authorino-authorino-authorization -n kuadrant-system \
   service.beta.openshift.io/serving-cert-secret-name=authorino-tls</code></pre>
+
+<p>This annotation tells OpenShift's service-ca operator to:</p>
+<ol>
+<li>Generate a TLS certificate for the Authorino service</li>
+<li>Store it in a Secret called <code>authorino-tls</code></li>
+<li>The certificate is signed by OpenShift's internal CA</li>
+</ol>
+
+<p><strong>Why we skip it here:</strong> We're using <code>enable-auth: false</code> which bypasses Authorino entirely, so the TLS annotation is not needed.</p>
 
 <hr>
 
@@ -223,11 +295,24 @@ spec:
 <h3>Challenge 4: Red Hat vLLM Image Incompatibility</h3>
 <p><strong>Solution:</strong> Use upstream image <code>vllm/vllm-openai:v0.8.4</code></p>
 
+<h3>Summary: Tesla T4 Configuration</h3>
+<pre><code>containers:
+  - name: main
+    image: vllm/vllm-openai:v0.8.4  # Use upstream image
+    env:
+      - name: VLLM_USE_V1
+        value: "0"                   # Disable V1 engine
+      - name: VLLM_ADDITIONAL_ARGS
+        value: "--dtype=half --enforce-eager"  # float16 + no CUDA graphs</code></pre>
+
 <hr>
 
 <h2>Step 6: Verify Deployment</h2>
 <pre><code>oc get llminferenceservice -n my-first-model
-oc get pods -n my-first-model</code></pre>
+oc get pods -n my-first-model
+
+# Check AuthPolicy (auto-created)
+oc get authpolicy -n my-first-model</code></pre>
 
 <h3>Test the Endpoint</h3>
 <pre><code>curl -sk https://GATEWAY_URL/my-first-model/qwen3-0-6b/v1/chat/completions \
@@ -236,17 +321,41 @@ oc get pods -n my-first-model</code></pre>
 
 <hr>
 
+<h2>TLS Deep Dive</h2>
+
+<h3>The Complete TLS Flow</h3>
+<ol>
+<li><strong>Client sends HTTPS request</strong> (TLS 1.2/1.3) using the <code>default-gateway-tls</code> certificate</li>
+<li><strong>Gateway</strong> receives the request, performs TLS termination (decrypts HTTPS → HTTP)</li>
+<li><strong>Authorino</strong> receives HTTP request on internal cluster network (bypassed when <code>enable-auth: false</code>)</li>
+<li><strong>Model Pod (vLLM)</strong> receives the authenticated request and processes it</li>
+</ol>
+
+<h3>Certificate Sources</h3>
+<table>
+<tr><th>Certificate</th><th>Location</th><th>Created By</th><th>Purpose</th></tr>
+<tr><td><code>default-gateway-tls</code></td><td>openshift-ingress</td><td>OpenShift Gateway Controller</td><td>HTTPS for external traffic</td></tr>
+<tr><td><code>authorino-tls</code></td><td>kuadrant-system</td><td>OpenShift Service CA</td><td>Internal TLS for Authorino (when token auth enabled)</td></tr>
+</table>
+
+<hr>
+
 <h2>Conclusion</h2>
 <p>We successfully deployed an LLM on OpenShift AI 3.0 using the new LLM-D architecture. Key takeaways:</p>
 <ol>
 <li><strong>LLM-D enables intelligent load balancing</strong> across multiple GPU pods</li>
 <li><strong>Gateway API with TLS</strong> provides secure external access</li>
-<li><strong>Kuadrant handles authentication</strong> with flexible policies</li>
+<li><strong>Kuadrant automatically creates AuthPolicies</strong> — you don't need to write them manually</li>
 <li><strong>GPU compatibility matters</strong> - Tesla T4 requires specific vLLM settings</li>
 </ol>
 
 <h3>What's Next?</h3>
-<p>In the next blog, we'll explore rate limiting with RateLimitPolicy and tiered access.</p>
+<p>In <strong>Part 2</strong>, we'll explore:</p>
+<ul>
+<li><strong>RateLimitPolicy</strong> for request/token-based rate limiting</li>
+<li><strong>DNSPolicy</strong> for custom domain management</li>
+<li><strong>GenAI Playground</strong> with MCP servers for tool integration</li>
+</ul>
 
 <hr>
 

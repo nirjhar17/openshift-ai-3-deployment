@@ -12,10 +12,12 @@ OpenShift AI 3.0 changes this with **llm-d** — a disaggregated inference archi
 
 In this blog, I'll walk you through deploying an LLM on OpenShift AI 3.0 from scratch — setting up the Gateway for secure HTTPS access, enabling authentication, and handling real-world GPU compatibility issues with Tesla T4. By the end, you'll have a production-ready model endpoint with automatic TLS, intelligent load balancing, and enterprise-grade security.
 
+This blog focuses on deploying your first model with secure HTTPS access. We'll explain how Kuadrant automatically creates AuthPolicies when you deploy an LLMInferenceService — you don't need to write them manually. In **Part 2**, we'll build on this foundation with RateLimitPolicy for tiered access control, DNSPolicy for custom domain management, and the GenAI Playground with MCP servers.
+
 **What we'll cover:**
 - Setting up the required operators
 - Configuring Gateway API for external access
-- Enabling authentication with Kuadrant
+- Enabling Kuadrant and understanding automatic AuthPolicy creation
 - Handling TLS certificates
 - Overcoming GPU compatibility challenges (Tesla T4)
 
@@ -100,7 +102,10 @@ Install these operators from **OperatorHub** in the OpenShift Web Console:
 |----------|---------|---------|
 | **Red Hat OpenShift AI** | `fast-3.x` | Core AI/ML platform with KServe |
 | **NVIDIA GPU Operator** | `v25.10` | GPU device plugin & drivers |
-| **Red Hat Connectivity Link** | `stable` | API gateway, auth & rate limiting |
+| **Red Hat Connectivity Link** | `stable` | API gateway, auth & rate limiting (Kuadrant) |
+| **Red Hat OpenShift Service Mesh** | `stable` | Istio service mesh for traffic management |
+| **Red Hat OpenShift Serverless** | `stable` | Knative for serverless inference scaling |
+| **Node Feature Discovery** | `stable` | Detects hardware features (GPUs, CPUs) |
 
 #### Installation Steps (OpenShift Console)
 
@@ -113,7 +118,7 @@ Install these operators from **OperatorHub** in the OpenShift Web Console:
 
 ```bash
 # Check all operators are installed and ready
-oc get csv -A | grep -E "rhods|gpu|rhcl"
+oc get csv -A | grep -E "rhods|gpu|rhcl|servicemesh|serverless|nfd"
 ```
 
 ---
@@ -218,9 +223,9 @@ oc get secret default-gateway-tls -n openshift-ingress
 
 ---
 
-## Step 3: Enable Kuadrant Authentication
+## Step 3: Enable Kuadrant and AuthPolicy
 
-Kuadrant provides authentication and rate limiting for your APIs.
+Kuadrant provides authentication and rate limiting for your APIs. When you deploy an LLMInferenceService, the **ODH Model Controller automatically creates AuthPolicies** — you don't need to write them manually.
 
 ### Create Kuadrant Resource
 
@@ -245,9 +250,48 @@ This creates:
 - **Authorino**: Handles authentication (validates tokens)
 - **Limitador**: Handles rate limiting
 
-### Enable Authorino TLS (Important!)
+### How AuthPolicy is Automatically Created
 
-For Kuadrant to work properly with the Gateway, Authorino needs a TLS certificate. OpenShift can auto-generate this:
+When you deploy an `LLMInferenceService`, the ODH Model Controller automatically creates two AuthPolicies:
+
+1. **Gateway-level AuthPolicy** (`openshift-ai-inference-authn`): Applies to all traffic through the Gateway
+2. **HTTPRoute-level AuthPolicy** (`<model-name>-kserve-route-authn`): Specific to your model
+
+You can verify these are created:
+```bash
+# Check AuthPolicies
+oc get authpolicy -A
+
+# Example output:
+# NAMESPACE          NAME                               TARGETREF KIND   TARGETREF NAME
+# openshift-ingress  openshift-ai-inference-authn       Gateway          openshift-ai-inference
+# my-first-model     qwen3-0-6b-kserve-route-authn      HTTPRoute        qwen3-0-6b-kserve-route
+```
+
+### Authentication Modes
+
+The `security.opendatahub.io/enable-auth` annotation controls how AuthPolicy is configured:
+
+| Setting | AuthPolicy Created | Access |
+|---------|-------------------|--------|
+| `"false"` | Anonymous (`public: anonymous: {}`) | Anyone can access without token |
+| Not set (default) | Token-based (`kubernetesTokenReview`) | Requires valid K8s token |
+
+**For anonymous access** (what we use in this guide):
+```yaml
+annotations:
+  security.opendatahub.io/enable-auth: "false"
+```
+
+**For token-based access** (production recommended):
+```yaml
+# Remove the enable-auth annotation, then users need:
+curl -H "Authorization: Bearer $(oc whoami -t)" https://<GATEWAY_URL>/...
+```
+
+### Enable Authorino TLS (For Token-Based Auth)
+
+> ⚠️ **When to use this:** If you want token-based authentication (remove `enable-auth: false`), you need to enable TLS for Authorino. If you're using anonymous access (`enable-auth: false`), you can skip this step.
 
 ```bash
 oc annotate svc authorino-authorino-authorization -n kuadrant-system \
@@ -258,6 +302,8 @@ This annotation tells OpenShift's service-ca operator to:
 1. Generate a TLS certificate for the Authorino service
 2. Store it in a Secret called `authorino-tls`
 3. The certificate is signed by OpenShift's internal CA
+
+**Why we skip it here:** We're using `enable-auth: false` which bypasses Authorino entirely, so the TLS annotation is not needed.
 
 ---
 
@@ -517,6 +563,17 @@ oc get pods -n my-first-model
 # qwen3-0-6b-epp-scheduler-zzzzz          1/1     Running   
 ```
 
+### Check AuthPolicy (Auto-Created)
+
+```bash
+# Verify AuthPolicy was automatically created
+oc get authpolicy -n my-first-model
+
+# Expected output:
+# NAME                            TARGETREF KIND   TARGETREF NAME           ENFORCED
+# qwen3-0-6b-kserve-route-authn   HTTPRoute        qwen3-0-6b-kserve-route  true
+```
+
 ### Get the Model URL
 
 ```bash
@@ -537,68 +594,6 @@ curl -sk https://<GATEWAY_URL>/my-first-model/qwen3-0-6b/v1/chat/completions \
     "messages": [{"role": "user", "content": "What is Kubernetes?"}],
     "max_tokens": 100
   }'
-```
-
----
-
-## Understanding Authentication
-
-### Anonymous Access (Current Setup)
-
-With `security.opendatahub.io/enable-auth: "false"`, anyone can access the model:
-
-```bash
-# Works without any token
-curl https://<GATEWAY_URL>/my-first-model/qwen3-0-6b/v1/models
-```
-
-### Token-Based Access
-
-Remove the `enable-auth` annotation to require Kubernetes tokens:
-
-```yaml
-metadata:
-  annotations:
-    # Remove this line to enable token-based auth
-    # security.opendatahub.io/enable-auth: "false"
-```
-
-Then users need to provide their OpenShift token:
-
-```bash
-# Get your token and make request
-curl -H "Authorization: Bearer $(oc whoami -t)" \
-  https://<GATEWAY_URL>/my-first-model/qwen3-0-6b/v1/models
-```
-
-### How AuthPolicy Works
-
-The ODH Model Controller automatically creates AuthPolicies based on your settings:
-
-**Anonymous mode** (`enable-auth: "false"`):
-```yaml
-apiVersion: kuadrant.io/v1
-kind: AuthPolicy
-spec:
-  rules:
-    authentication:
-      public:
-        anonymous: {}  # Anyone can access
-```
-
-**Token mode** (default):
-```yaml
-apiVersion: kuadrant.io/v1
-kind: AuthPolicy
-spec:
-  rules:
-    authentication:
-      kubernetes-user:
-        kubernetesTokenReview:
-          audiences: [...]  # Validates K8s tokens
-    authorization:
-      inference-access:
-        kubernetesSubjectAccessReview: ...  # Checks RBAC permissions
 ```
 
 ---
@@ -627,6 +622,7 @@ spec:
 │    ▼                                                                │
 │  ┌─────────────────────────────────────────────────────────────┐   │
 │  │  Authorino (authentication check)                            │   │
+│  │  (Bypassed when enable-auth: false)                          │   │
 │  └─────────────────────────────────────────────────────────────┘   │
 │    │                                                                │
 │    │ HTTP                                                          │
@@ -643,7 +639,7 @@ spec:
 | Certificate | Location | Created By | Purpose |
 |-------------|----------|------------|---------|
 | `default-gateway-tls` | `openshift-ingress` namespace | OpenShift Gateway Controller | HTTPS for external traffic |
-| `authorino-tls` | `kuadrant-system` namespace | OpenShift Service CA | Internal TLS for Authorino |
+| `authorino-tls` | `kuadrant-system` namespace | OpenShift Service CA | Internal TLS for Authorino (when token auth enabled) |
 
 ### Checking Certificates
 
@@ -651,7 +647,7 @@ spec:
 # Gateway TLS certificate
 oc get secret default-gateway-tls -n openshift-ingress
 
-# Authorino TLS certificate
+# Authorino TLS certificate (only if using token-based auth)
 oc get secret authorino-tls -n kuadrant-system
 
 # View certificate details
@@ -666,16 +662,16 @@ We successfully deployed an LLM on OpenShift AI 3.0 using the new LLM-D architec
 
 1. **LLM-D enables intelligent load balancing** across multiple GPU pods
 2. **Gateway API with TLS** provides secure external access
-3. **Kuadrant handles authentication** with flexible policies
+3. **Kuadrant automatically creates AuthPolicies** — you don't need to write them manually
 4. **GPU compatibility matters** - Tesla T4 requires specific vLLM settings
 5. **OpenShift automates TLS** certificate management
 
 ### What's Next?
 
-In the next blog, we'll explore:
-- Rate limiting with `RateLimitPolicy`
-- Token-based rate limiting for AI workloads
-- Usage tracking and billing with MaaS
+In **Part 2**, we'll explore:
+- **RateLimitPolicy** for request/token-based rate limiting
+- **DNSPolicy** for custom domain management
+- **GenAI Playground** with MCP servers for tool integration
 
 ---
 
@@ -691,4 +687,3 @@ In the next blog, we'll explore:
 
 *Author: Nirjhar Jajodia*  
 *Date: December 2025*
-
