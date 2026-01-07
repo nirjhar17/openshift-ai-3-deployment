@@ -1,4 +1,4 @@
-# Deploying LLMs on OpenShift AI 3.0 with LLM-D Architecture
+# From Container to Production: Deploying LLMs on OpenShift AI 3.0 with Intelligent Load Balancing
 
 *A complete guide to deploying Large Language Models using OpenShift AI 3.0's new disaggregated inference architecture*
 
@@ -6,14 +6,18 @@
 
 ## Introduction
 
-Red Hat OpenShift AI 3.0 introduces a revolutionary way to serve Large Language Models (LLMs) called **LLM-D (Disaggregated Inference)**. This architecture separates the prefill and decode phases of LLM inference, enabling intelligent request routing and better GPU utilization.
+**Red Hat recently released OpenShift AI 3.0**, introducing a new way to deploy and serve Large Language Models at scale. In earlier versions, deploying a model meant creating an `InferenceService`, exposing it via OpenShift Routes, and handling authentication separately. It worked, but scaling across multiple GPUs required manual load balancing, and securing endpoints needed extra configuration.
 
-In this blog, I'll walk you through deploying an LLM on OpenShift AI 3.0, including:
+OpenShift AI 3.0 changes this with **llm-d** — a disaggregated inference architecture that intelligently distributes requests across multiple GPU pods. Instead of traditional Routes, we now use the **Kubernetes Gateway API** for external access, which provides built-in TLS termination and seamless integration with **Red Hat Connectivity Link** (Kuadrant) for authentication and rate limiting. The new `LLMInferenceService` resource handles everything — it automatically creates an **EPP Scheduler** that routes requests to the best available GPU based on queue length, KV cache utilization, and prefix matching.
+
+In this blog, I'll walk you through deploying an LLM on OpenShift AI 3.0 from scratch — setting up the Gateway for secure HTTPS access, enabling authentication, and handling real-world GPU compatibility issues with Tesla T4. By the end, you'll have a production-ready model endpoint with automatic TLS, intelligent load balancing, and enterprise-grade security.
+
+**What we'll cover:**
 - Setting up the required operators
 - Configuring Gateway API for external access
 - Enabling authentication with Kuadrant
 - Handling TLS certificates
-- Overcoming GPU compatibility challenges
+- Overcoming GPU compatibility challenges (Tesla T4)
 
 **GitHub Repository:** All configuration files are available at [github.com/nirjhar17/openshift-ai-3-deployment](https://github.com/nirjhar17/openshift-ai-3-deployment)
 
