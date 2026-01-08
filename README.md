@@ -81,7 +81,10 @@ These are automatically installed by Red Hat Connectivity Link:
 
 ```
 openshift-ai-3-deployment/
-├── README.md
+├── README.md                         # This file (infrastructure deployment)
+├── BLOG.md                           # Blog: LLM Deployment with LLM-D
+├── BLOG-3-GENAI-PLAYGROUND-MCP.md    # Blog: GenAI Playground + MCP
+├── ARCHITECTURE.md                   # Detailed architecture documentation
 ├── 00-prerequisites/
 │   ├── operators.yaml                # Operator subscriptions
 │   ├── datasciencecluster.yaml       # DataScienceCluster config
@@ -97,8 +100,19 @@ openshift-ai-3-deployment/
 ├── 04-llm-d-deployment/
 │   └── llminferenceservice.yaml      # LLMInferenceService for Qwen model
 └── 05-genai-playground/
+    ├── README.md                     # GenAI Playground & MCP Setup Guide
     └── llamastackdistribution.yaml   # GenAI Playground configuration
 ```
+
+## Documentation
+
+| Document | Description |
+|----------|-------------|
+| [README.md](README.md) | Infrastructure deployment (this file) |
+| [05-genai-playground/README.md](05-genai-playground/README.md) | **GenAI Playground & MCP Setup Guide** |
+| [BLOG.md](BLOG.md) | Blog: LLM Deployment with LLM-D |
+| [BLOG-3-GENAI-PLAYGROUND-MCP.md](BLOG-3-GENAI-PLAYGROUND-MCP.md) | Blog: GenAI Playground + MCP |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Detailed architecture documentation |
 
 ## Deployment Steps
 
