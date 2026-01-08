@@ -284,6 +284,67 @@ The Playground provides:
 
 ---
 
+## Troubleshooting: LLMInferenceService + Playground Integration
+
+These are critical discoveries we made while integrating LLMInferenceService (llm-d) with the GenAI Playground.
+
+### 1. Model Greyed Out in Playground ⭐
+
+**Symptom:** Model appears in the Playground dropdown but is greyed out and not selectable.
+
+**Root Cause:** Missing required labels on `LLMInferenceService`.
+
+**Background:** The Red Hat documentation shows GenAI Playground integration only for `InferenceService`, not for `LLMInferenceService` (llm-d). These appeared to be separate, non-integrated features.
+
+**Discovery:** We found that by adding the `genai-asset` label (which is documented for InferenceService), the Playground also recognizes LLMInferenceService! This is **undocumented but working**.
+
+**Fix:**
+```bash
+oc label llminferenceservice <name> -n <namespace> \
+  opendatahub.io/genai-asset=true \
+  opendatahub.io/dashboard=true
+```
+
+**Why this works:** The `opendatahub.io/genai-asset: 'true'` label tells the OpenShift AI Dashboard:
+- "This model should appear in the AI Assets list"
+- "This model can be added to the GenAI Playground"
+
+Without this label, the model is invisible to the Playground UI, even though it's fully functional via API.
+
+---
+
+### 2. ConfigMap Not Updating After LlamaStackDistribution Changes
+
+**Symptom:** You update the `LlamaStackDistribution` CR, but the LlamaStack pod still uses the old configuration.
+
+**Background:**  
+When you create a `LlamaStackDistribution`, it also creates a ConfigMap called `llama-stack-config`. This ConfigMap contains the `run.yaml` configuration that defines:
+- Model endpoints (vLLM URL)
+- Model ID mappings
+- Provider settings (max_tokens, tls_verify, etc.)
+
+This ConfigMap is **mounted as a volume** to the LlamaStack pod at `/etc/llama-stack/run.yaml`. The pod reads this file on startup to know how to connect to the model.
+
+**Why updates don't propagate:**  
+When the `LlamaStackDistribution` is created via the OpenShift AI Dashboard (using "Add to Playground"), it sets `spec.server.userConfig.configMapName`, which tells the operator: *"This ConfigMap is user-managed, don't overwrite it."* This is why updating the CR doesn't update the ConfigMap automatically.
+
+**Fix:**  
+Manually edit the ConfigMap and restart the pod:
+
+```bash
+# Edit the ConfigMap directly
+oc edit configmap llama-stack-config -n my-first-model
+
+# Or patch specific values
+oc patch configmap llama-stack-config -n my-first-model --type='json' \
+  -p='[{"op":"replace","path":"/data/run.yaml","value":"<new-config>"}]'
+
+# Restart the pod to pick up changes
+oc delete pod -l app=llama-stack -n my-first-model
+```
+
+---
+
 ## Understanding MCP (Model Context Protocol)
 
 **MCP (Model Context Protocol)** is an open standard that allows LLMs to use external tools. Think of it as giving your AI assistant "hands" to interact with the outside world.
@@ -475,59 +536,6 @@ spec:
 | `fsGroup: Invalid value` | SCC restrictions | Let it retry — usually resolves automatically |
 | `Connection refused` | Wrong model service URL | Check `oc get svc -n <namespace>` |
 | `PermissionError: /.cache` | Non-root user | Add `HOME=/tmp` environment variable |
-
-### Challenge 5: Model Greyed Out in Playground ⭐
-
-**Symptom:** Model appears in the Playground dropdown but is greyed out and not selectable.
-
-**Root Cause:** Missing required labels on `LLMInferenceService`.
-
-**Background:** The Red Hat documentation shows GenAI Playground integration only for `InferenceService`, not for `LLMInferenceService` (llm-d). These appeared to be separate, non-integrated features.
-
-**Discovery:** We found that by adding the `genai-asset` label (which is documented for InferenceService), the Playground also recognizes LLMInferenceService! This is **undocumented but working**.
-
-**Fix:**
-```bash
-oc label llminferenceservice <name> -n <namespace> \
-  opendatahub.io/genai-asset=true \
-  opendatahub.io/dashboard=true
-```
-
-**Why this works:** The `opendatahub.io/genai-asset: 'true'` label tells the OpenShift AI Dashboard:
-- "This model should appear in the AI Assets list"
-- "This model can be added to the GenAI Playground"
-
-Without this label, the model is invisible to the Playground UI, even though it's fully functional via API.
-
-### Challenge 6: ConfigMap Not Updating After LlamaStackDistribution Changes
-
-**Symptom:** You update the `LlamaStackDistribution` CR, but the LlamaStack pod still uses the old configuration.
-
-**Background:**  
-When you create a `LlamaStackDistribution`, it also creates a ConfigMap called `llama-stack-config`. This ConfigMap contains the `run.yaml` configuration that defines:
-- Model endpoints (vLLM URL)
-- Model ID mappings
-- Provider settings (max_tokens, tls_verify, etc.)
-
-This ConfigMap is **mounted as a volume** to the LlamaStack pod at `/etc/llama-stack/run.yaml`. The pod reads this file on startup to know how to connect to the model.
-
-**Why updates don't propagate:**  
-When the `LlamaStackDistribution` is created via the OpenShift AI Dashboard (using "Add to Playground"), it sets `spec.server.userConfig.configMapName`, which tells the operator: *"This ConfigMap is user-managed, don't overwrite it."* This is why updating the CR doesn't update the ConfigMap automatically.
-
-**Fix:**  
-Manually edit the ConfigMap and restart the pod:
-
-```bash
-# Edit the ConfigMap directly
-oc edit configmap llama-stack-config -n my-first-model
-
-# Or patch specific values
-oc patch configmap llama-stack-config -n my-first-model --type='json' \
-  -p='[{"op":"replace","path":"/data/run.yaml","value":"<new-config>"}]'
-
-# Restart the pod to pick up changes
-oc delete pod -l app=llama-stack -n my-first-model
-```
 
 ---
 
