@@ -1,0 +1,26 @@
+# Jekyll Configuration for GitHub Pages
+title: OpenShift AI 3.0 Blog Series
+description: A complete guide to deploying LLMs on OpenShift AI 3.0
+author: Nirjhar Jajodia
+
+# Theme
+theme: jekyll-theme-minimal
+
+# Build settings
+markdown: kramdown
+highlighter: rouge
+
+# Exclude files from build
+exclude:
+  - README.md
+  - LICENSE
+  - .gitignore
+  - "*.yaml"
+  - "*.sh"
+  - 00-prerequisites/
+  - 01-gateway-api/
+  - 02-kuadrant/
+  - 03-hardware-profile/
+  - 04-llm-d-deployment/
+  - 05-genai-playground/
+

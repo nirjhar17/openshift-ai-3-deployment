@@ -668,10 +668,14 @@ We successfully deployed an LLM on OpenShift AI 3.0 using the new LLM-D architec
 
 ### What's Next?
 
-In **Part 2**, we'll explore:
+In **[Part 2: GenAI Playground + MCP](BLOG-2-GENAI-PLAYGROUND-MCP.md)**, we'll explore:
+- **GenAI Playground** — Web-based chat interface with LlamaStack
+- **MCP Servers** — Connect external tools (web search, code analysis)
+- **Agents** — Build multi-turn conversational AI
+
+In **Part 3** (coming soon):
 - **RateLimitPolicy** for request/token-based rate limiting
 - **DNSPolicy** for custom domain management
-- **GenAI Playground** with MCP servers for tool integration
 
 ---
 

@@ -1,6 +1,6 @@
 # Building an AI Chat Interface with GenAI Playground and MCP Tools on OpenShift AI 3.0
 
-*Part 3: Adding a web-based chat UI and connecting external tools to your LLM*
+*Part 2: Adding a web-based chat UI and connecting external tools to your LLM*
 
 ---
 
@@ -709,7 +709,7 @@ In **Part 2**, we explored RateLimitPolicy for tiered access. The complete serie
 
 - **Part 1**: [LLM Deployment with LLM-D](https://github.com/nirjhar17/openshift-ai-3-deployment/blob/main/BLOG.md) ✅
 - **Part 2**: RateLimitPolicy & DNSPolicy (coming soon)
-- **Part 3**: GenAI Playground + MCP (this blog) ✅
+- **Part 2**: GenAI Playground + MCP (this blog) ✅
 
 ---
 

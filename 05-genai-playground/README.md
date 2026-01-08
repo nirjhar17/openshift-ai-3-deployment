@@ -370,5 +370,5 @@ Consider self-hosting MCP servers for production.
 - [MCP Servers Showroom Module](https://rhpds.github.io/redhat-openshift-ai-3-showroom/modules/03-05-deploy-mcp.html)
 - [LlamaStack GitHub](https://github.com/meta-llama/llama-stack)
 - [MCP Specification](https://modelcontextprotocol.io/)
-- [Blog: GenAI Playground + MCP](../BLOG-3-GENAI-PLAYGROUND-MCP.md)
+- [Blog 2: GenAI Playground + MCP](../BLOG-2-GENAI-PLAYGROUND-MCP.md)
 
