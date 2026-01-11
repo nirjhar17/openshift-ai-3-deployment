@@ -466,6 +466,126 @@ data:
 
 ---
 
+## Critical: Enabling vLLM Tool Calling for MCP
+
+**This is the most important section!** Without proper vLLM configuration, MCP tools will NOT work even if everything else is correct.
+
+### The Problem
+
+When you enable MCP tools in the Playground, LlamaStack sends requests to vLLM with a `tools[]` parameter. By default, vLLM:
+1. Doesn't accept tool parameters (returns 400 Bad Request)
+2. Even if enabled, may not parse tool calls correctly
+
+### The Solution
+
+You MUST add these flags to your vLLM deployment:
+
+```bash
+--enable-auto-tool-choice --tool-call-parser hermes
+```
+
+**Full patch command:**
+```bash
+oc patch llminferenceservice qwen3-0-6b -n my-first-model --type='json' -p='[
+  {
+    "op": "replace",
+    "path": "/spec/template/containers/0/env/2/value",
+    "value": "--dtype=half --max-model-len=4096 --gpu-memory-utilization=0.85 --enforce-eager --enable-auto-tool-choice --tool-call-parser hermes"
+  }
+]'
+```
+
+### Why `hermes` Parser?
+
+We discovered through extensive testing that the `qwen3_xml` parser doesn't work with Qwen3 models that output `<think>` tags. The model generates correct tool calls:
+
+```xml
+<think>I should use get_weather function...</think>
+<tool_call>{"name": "get_weather", "arguments": {"city": "Tokyo"}}</tool_call>
+```
+
+But `qwen3_xml` parser fails to extract them, returning empty `tool_calls[]`.
+
+The `hermes` parser correctly handles this and returns:
+```json
+{
+  "tool_calls": [
+    {
+      "type": "function",
+      "function": {
+        "name": "get_weather",
+        "arguments": "{\"city\": \"Tokyo\"}"
+      }
+    }
+  ],
+  "finish_reason": "tool_calls"
+}
+```
+
+### Verification
+
+After patching, verify the pod restarts with the new config:
+```bash
+# Check pod has restarted
+oc get pods -n my-first-model | grep qwen
+
+# Verify args include tool calling
+oc logs <vllm-pod> -n my-first-model | grep "tool_call_parser"
+# Should show: 'tool_call_parser': 'hermes'
+```
+
+---
+
+## MCP Request Flow
+
+Understanding how requests flow helps with troubleshooting:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│                           MCP Tool Call Request Flow                                 │
+├─────────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                     │
+│  User: "What is the weather in Tokyo?"                                             │
+│         │                                                                           │
+│         ▼                                                                           │
+│  ┌─────────────────┐      ┌─────────────────┐      ┌─────────────────┐             │
+│  │   Playground    │ ──▶  │   LlamaStack    │ ──▶  │     vLLM        │             │
+│  │   (Browser)     │      │   (Pod)         │      │   (Model)       │             │
+│  └─────────────────┘      └────────┬────────┘      └────────┬────────┘             │
+│                                    │                        │                       │
+│                                    │   ④ tool_calls[]      │                       │
+│                                    │ ◀──────────────────────┘                       │
+│                                    │                                                │
+│                                    ▼                                                │
+│                           ┌─────────────────┐                                       │
+│                           │   MCP Server    │                                       │
+│                           │  (Weather API)  │                                       │
+│                           └────────┬────────┘                                       │
+│                                    │                                                │
+│                                    │   ⑤ Tool Result: "25°C, Cloudy"               │
+│                                    ▼                                                │
+│                           ┌─────────────────┐                                       │
+│                           │   LlamaStack    │ ──▶ vLLM ──▶ Final Response          │
+│                           └─────────────────┘                                       │
+│                                                                                     │
+│  Final: "The weather in Tokyo is 25°C and Cloudy."                                 │
+│                                                                                     │
+└─────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+| Step | Component | What Happens | What Can Go Wrong |
+|------|-----------|--------------|-------------------|
+| ① | Playground | Sends message + MCP config | Network issues |
+| ② | LlamaStack | Forwards to vLLM with tools[] | Wrong model URL |
+| ③ | vLLM | Model generates tool call | **Parser fails** ⚠️ |
+| ④ | LlamaStack | Extracts tool_calls | Empty array if parser wrong |
+| ⑤ | MCP Server | Executes tool | Auth required, server down |
+| ⑥ | Response | Final answer to user | Token limits |
+
+**The most common failure point is Step ③** - the vLLM tool call parser.
+
+---
+
 ## Challenges We Encountered
 
 ### Challenge 1: Remote MCP Servers Returning 404
@@ -536,6 +656,52 @@ spec:
 | `fsGroup: Invalid value` | SCC restrictions | Let it retry — usually resolves automatically |
 | `Connection refused` | Wrong model service URL | Check `oc get svc -n <namespace>` |
 | `PermissionError: /.cache` | Non-root user | Add `HOME=/tmp` environment variable |
+
+### Challenge 5: Model Recognizes Tool But Doesn't Execute It ⭐
+
+**Problem**: The model's `<think>` output shows it knows about the tool, but nothing happens.
+
+```
+<think>
+I should use the get_current_weather function with city="Tokyo"...
+</think>
+```
+
+But the response ends there with no weather data.
+
+**Root Cause**: Wrong vLLM tool call parser.
+
+**Debugging**:
+```bash
+# Test vLLM directly
+oc run curl-test --rm -i --restart=Never --image=curlimages/curl -n my-first-model -- \
+  curl -k -s "https://qwen3-0-6b-kserve-workload-svc:8000/v1/chat/completions" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"Qwen/Qwen3-0.6B","messages":[{"role":"user","content":"Weather in Tokyo?"}],"tools":[{"type":"function","function":{"name":"get_weather","description":"Get weather","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}}],"max_tokens":300}'
+```
+
+**Check the response**:
+- If `"tool_calls": []` (empty) → Parser is wrong
+- If `"tool_calls": [...]` (populated) → Parser is working
+
+**Solution**: Change parser from `qwen3_xml` to `hermes`:
+```bash
+oc patch llminferenceservice qwen3-0-6b -n my-first-model --type='json' -p='[
+  {"op":"replace","path":"/spec/template/containers/0/env/2/value","value":"--dtype=half --max-model-len=4096 --gpu-memory-utilization=0.85 --enforce-eager --enable-auto-tool-choice --tool-call-parser hermes"}
+]'
+```
+
+---
+
+## Detailed Troubleshooting Guide
+
+For comprehensive troubleshooting including:
+- Complete request flow architecture diagram
+- Component-by-component debugging
+- Direct API testing commands
+- Common error patterns and solutions
+
+See: **[MCP-TROUBLESHOOTING.md](./MCP-TROUBLESHOOTING.md)**
 
 ---
 
@@ -757,28 +923,46 @@ oc get odhdashboardconfig odh-dashboard-config -n redhat-ods-applications \
 
 ## Conclusion
 
-We've successfully set up the GenAI Playground — a web-based chat interface for interacting with our deployed LLM. Key takeaways:
+We've successfully set up the GenAI Playground with **working MCP tool calling** — a web-based chat interface where the LLM can access external tools like weather APIs. Key takeaways:
 
 1. **LlamaStack powers the Playground** — it provides inference, agents, and tool APIs
-2. **MCP enables external tools** — give your LLM access to web search, code analysis, etc.
-3. **ConfigMap-based tool registration** — easy to add/remove MCP servers
-4. **Self-hosted MCP servers recommended** — public servers may be unreliable
+2. **MCP enables external tools** — give your LLM access to real-time data (weather, web, code analysis)
+3. **vLLM tool calling requires explicit configuration** — `--enable-auto-tool-choice --tool-call-parser hermes`
+4. **Parser choice is critical** — `hermes` works with Qwen3's thinking tags, `qwen3_xml` doesn't
+5. **Direct API testing isolates issues** — always test vLLM directly when troubleshooting
+
+### Verified Working Example
+
+```
+User: "What is the weather in Kuala Lumpur?"
+
+Model: <think>I should use get_current_weather function...</think>
+
+Tool Call: get_current_weather(city="Kuala Lumpur")
+
+MCP Response: "Overcast, 25.4°C, Humidity 87%"
+
+Final Answer: "The weather in Kuala Lumpur is Overcast with a temperature 
+of 25.4°C and a relative humidity of 87%."
+```
 
 ### What's Next?
 
-In **Part 2**, we explored RateLimitPolicy for tiered access. The complete series:
+The complete series:
 
 - **Part 1**: [LLM Deployment with LLM-D](https://github.com/nirjhar17/openshift-ai-3-deployment/blob/main/BLOG.md) ✅
-- **Part 2**: RateLimitPolicy & DNSPolicy (coming soon)
 - **Part 2**: GenAI Playground + MCP (this blog) ✅
+- **Part 3**: RateLimitPolicy & DNSPolicy (coming soon)
 
 ---
 
 ## Resources
 
 - **GitHub Repository**: [github.com/nirjhar17/openshift-ai-3-deployment](https://github.com/nirjhar17/openshift-ai-3-deployment)
+- **MCP Troubleshooting Guide**: [MCP-TROUBLESHOOTING.md](./MCP-TROUBLESHOOTING.md) - Complete debugging guide with request flow diagrams
 - **LlamaStack Documentation**: [github.com/meta-llama/llama-stack](https://github.com/meta-llama/llama-stack)
 - **MCP Specification**: [modelcontextprotocol.io](https://modelcontextprotocol.io/)
+- **vLLM Tool Calling**: [vLLM Documentation](https://docs.vllm.ai/en/latest/features/tool_call.html)
 - **OpenShift AI 3.0 Showroom**: [GenAI Playground Module](https://rhpds.github.io/redhat-openshift-ai-3-showroom/modules/03-04-genai-playground.html)
 - **OpenShift AI Documentation**: [docs.redhat.com](https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/3.0)
 

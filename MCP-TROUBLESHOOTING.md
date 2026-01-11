@@ -1,7 +1,107 @@
 # MCP (Model Context Protocol) Troubleshooting Guide
 
 ## Overview
-This document captures the troubleshooting journey for enabling MCP tools with the GenAI Playground on OpenShift AI 3.0.
+This document captures the complete troubleshooting journey for enabling MCP tools with the GenAI Playground on OpenShift AI 3.0, including the request flow architecture and debugging strategies for each component.
+
+---
+
+## Request Flow Architecture
+
+Understanding how a request flows through the system is critical for troubleshooting. Here's the complete path:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│                           MCP Tool Call Request Flow                                 │
+├─────────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                     │
+│  ┌──────────────┐                                                                   │
+│  │    User      │  "What is the weather in Tokyo?"                                 │
+│  │   Browser    │                                                                   │
+│  └──────┬───────┘                                                                   │
+│         │ ①                                                                          │
+│         ▼                                                                           │
+│  ┌──────────────────────────────────────────────────────────────────────────────┐  │
+│  │                        GenAI Playground UI                                    │  │
+│  │  (OpenShift AI Dashboard - Gen AI Studio)                                     │  │
+│  │                                                                               │  │
+│  │  • Captures user message                                                      │  │
+│  │  • Adds system instructions                                                   │  │
+│  │  • Attaches enabled MCP tool configurations                                   │  │
+│  │  • Sends POST /v1/openai/v1/responses                                        │  │
+│  └──────┬───────────────────────────────────────────────────────────────────────┘  │
+│         │ ②                                                                          │
+│         ▼                                                                           │
+│  ┌──────────────────────────────────────────────────────────────────────────────┐  │
+│  │                        LlamaStack Server                                      │  │
+│  │  (lsd-genai-playground pod)                                                   │  │
+│  │                                                                               │  │
+│  │  • Receives request with tools[] configuration                               │  │
+│  │  • Connects to MCP servers to discover available tools                       │  │
+│  │  • Forwards inference request to vLLM with tool definitions                  │  │
+│  └──────┬───────────────────────────────────────────────────────────────────────┘  │
+│         │ ③                                                                          │
+│         ▼                                                                           │
+│  ┌──────────────────────────────────────────────────────────────────────────────┐  │
+│  │                           vLLM Server                                         │  │
+│  │  (qwen3-0-6b-kserve pod)                                                      │  │
+│  │                                                                               │  │
+│  │  • Receives POST /v1/chat/completions with tools[] parameter                 │  │
+│  │  • Model generates response (may include tool call)                          │  │
+│  │  • Tool Call Parser extracts structured tool calls from model output         │  │
+│  │  • Returns response with tool_calls[] array                                  │  │
+│  └──────┬───────────────────────────────────────────────────────────────────────┘  │
+│         │ ④ (if tool_calls detected)                                                │
+│         ▼                                                                           │
+│  ┌──────────────────────────────────────────────────────────────────────────────┐  │
+│  │                        LlamaStack Server                                      │  │
+│  │  (Tool Execution)                                                             │  │
+│  │                                                                               │  │
+│  │  • Receives tool_calls from vLLM response                                    │  │
+│  │  • Routes call to appropriate MCP server                                     │  │
+│  └──────┬───────────────────────────────────────────────────────────────────────┘  │
+│         │ ⑤                                                                          │
+│         ▼                                                                           │
+│  ┌──────────────────────────────────────────────────────────────────────────────┐  │
+│  │                          MCP Server                                           │  │
+│  │  (e.g., Weather API - https://weather-mcp-server.apify.actor/mcp)            │  │
+│  │                                                                               │  │
+│  │  • Receives tool call: get_current_weather(city="Tokyo")                     │  │
+│  │  • Executes the actual API call                                              │  │
+│  │  • Returns result: "Temperature: 15°C, Cloudy"                               │  │
+│  └──────┬───────────────────────────────────────────────────────────────────────┘  │
+│         │ ⑥                                                                          │
+│         ▼                                                                           │
+│  ┌──────────────────────────────────────────────────────────────────────────────┐  │
+│  │                        LlamaStack Server                                      │  │
+│  │  (Response Assembly)                                                          │  │
+│  │                                                                               │  │
+│  │  • Receives tool result from MCP server                                      │  │
+│  │  • Sends result back to vLLM for final response generation                   │  │
+│  │  • vLLM generates user-friendly response using tool result                   │  │
+│  └──────┬───────────────────────────────────────────────────────────────────────┘  │
+│         │ ⑦                                                                          │
+│         ▼                                                                           │
+│  ┌──────────────┐                                                                   │
+│  │    User      │  "The weather in Tokyo is 15°C and Cloudy."                     │
+│  │   Browser    │                                                                   │
+│  └──────────────┘                                                                   │
+│                                                                                     │
+└─────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Component Responsibilities
+
+| Step | Component | Responsibility | Key Logs/Indicators |
+|------|-----------|----------------|---------------------|
+| ① | Playground UI | Send user message + tool config | Browser Network tab |
+| ② | LlamaStack | Route request, discover MCP tools | `POST /v1/openai/v1/responses` |
+| ③ | vLLM | Generate response, parse tool calls | `tool_call_parser`, `tool_calls[]` |
+| ④ | LlamaStack | Execute tool via MCP protocol | `mcp.client` logs |
+| ⑤ | MCP Server | Run actual tool logic | MCP server logs |
+| ⑥ | LlamaStack | Assemble final response | Response streaming |
+| ⑦ | Playground UI | Display result to user | UI response area |
 
 ---
 
@@ -10,42 +110,59 @@ This document captures the troubleshooting journey for enabling MCP tools with t
 - **Deployment**: LLMInferenceService with LLM-D (disaggregated inference)
 - **Platform**: OpenShift AI 3.0 on ROSA
 - **GPU**: Tesla T4
+- **MCP Server**: Apify Weather MCP Server
 
 ---
 
-## Issue 1: MCP Tools Not Appearing in Playground
+## Troubleshooting by Component
 
-### Symptom
-- MCP servers listed in Playground but "View tools" button is **disabled**
-- Lock icon showing in "Auth" column
+### Step ① → ② : Playground UI to LlamaStack
 
-### Root Cause
-MCP servers require authentication to list tools.
+#### Issue: Request Not Reaching LlamaStack
 
-### Solution
-1. Click "Configure" button (gear icon) next to the MCP server
-2. Enter the API token in the "Access token" field
-3. Click "Authorize"
+**Symptoms:**
+- No response in chat
+- Browser console shows network errors
 
-### Verification
-After authorization, the "View tools" button becomes **enabled** and shows available tools.
-
----
-
-## Issue 2: Model Returns 400 Bad Request When MCP Enabled
-
-### Symptom
-- Model works fine without MCP
-- When MCP tools are enabled, vLLM returns `400 Bad Request`
-
-### Root Cause
-vLLM doesn't have tool calling enabled by default. When LlamaStack sends a request with `tools` parameter, vLLM rejects it.
-
-### Solution
-Add tool calling flags to vLLM:
-
+**Debugging Steps:**
 ```bash
-# Patch the LLMInferenceService
+# 1. Check LlamaStack pod is running
+oc get pods -n my-first-model | grep llama
+
+# 2. Check LlamaStack logs
+oc logs -n my-first-model -l app.kubernetes.io/managed-by=llama-stack-k8s-operator --tail=50
+
+# 3. Check service exists
+oc get svc -n my-first-model | grep llama
+```
+
+**Common Fixes:**
+- Restart LlamaStack pod: `oc delete pod <llama-pod> -n my-first-model`
+- Check LlamaStackDistribution CR is correctly configured
+
+---
+
+### Step ② → ③ : LlamaStack to vLLM
+
+#### Issue: vLLM Returns 400 Bad Request
+
+**Symptoms:**
+- LlamaStack logs show `400 Bad Request` from vLLM
+- Chat shows error or no response
+
+**Root Cause:** vLLM doesn't have tool calling enabled.
+
+**Debugging Steps:**
+```bash
+# 1. Check vLLM pod args
+oc get pod <vllm-pod> -n my-first-model -o jsonpath='{.spec.containers[0].args}'
+
+# 2. Check vLLM logs for errors
+oc logs <vllm-pod> -n my-first-model --tail=50 | grep -i "400\|error\|tool"
+```
+
+**Solution:** Add tool calling flags to LLMInferenceService:
+```bash
 oc patch llminferenceservice qwen3-0-6b -n my-first-model --type='json' -p='[
   {
     "op": "replace",
@@ -55,65 +172,33 @@ oc patch llminferenceservice qwen3-0-6b -n my-first-model --type='json' -p='[
 ]'
 ```
 
-### Key Flags
-| Flag | Description |
-|------|-------------|
-| `--enable-auto-tool-choice` | Enables tool/function calling support |
-| `--tool-call-parser` | Parser for tool call format (options: `hermes`, `qwen3_xml`, `llama3_json`, etc.) |
-
-### Parser Options for Different Models
-| Model | Recommended Parser |
-|-------|-------------------|
-| Qwen3 | `hermes` or `qwen3_xml` |
-| Llama3 | `llama3_json` |
-| Mistral | `mistral` |
-| Generic | `hermes` |
-
 ---
 
-## Issue 3: Invalid Tool Call Parser
+### Step ③ : vLLM Tool Call Parsing
 
-### Symptom
-vLLM pod crashes with error:
-```
-KeyError: 'invalid tool call parser: qwen (chose from { deepseek_v3, hermes, llama3_json, ... })'
-```
+#### Issue: Model Generates Tool Call But `tool_calls[]` is Empty
 
-### Root Cause
-Using incorrect parser name. `qwen` is not valid; use `qwen3_xml` or `hermes`.
+**Symptoms:**
+- Model's `<think>` shows it wants to use a tool
+- But response has `"tool_calls": []`
+- No actual tool execution happens
 
-### Solution
-Use a valid parser name from the supported list.
+**This was our MAIN issue!**
 
----
-
-## Issue 4: Model Recognizes Tool But Doesn't Execute It
-
-### Symptom
-Model's thinking shows it understands the tool:
-```
-<think>
-Let me check the tools available. There's a function called get_current_weather...
-I need to call that function with the city parameter set to "Paris".
-</think>
-```
-
-But then it doesn't output the actual tool call.
-
-### Investigation
-
-**Direct API Test:**
+**Debugging Steps:**
 ```bash
-curl -k -s "https://qwen3-0-6b-kserve-workload-svc:8000/v1/chat/completions" \
+# 1. Test vLLM directly with a tool call request
+oc run curl-test --rm -i --restart=Never --image=curlimages/curl -n my-first-model -- \
+  curl -k -s "https://qwen3-0-6b-kserve-workload-svc:8000/v1/chat/completions" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "Qwen/Qwen3-0.6B",
-    "messages": [{"role": "user", "content": "What is weather in Paris?"}],
+    "messages": [{"role": "user", "content": "What is weather in Tokyo?"}],
     "tools": [{
       "type": "function",
       "function": {
         "name": "get_weather",
-        "description": "Get weather",
+        "description": "Get weather for city",
         "parameters": {
           "type": "object",
           "properties": {"city": {"type": "string"}},
@@ -123,181 +208,237 @@ curl -k -s "https://qwen3-0-6b-kserve-workload-svc:8000/v1/chat/completions" \
     }],
     "max_tokens": 300
   }'
+
+# 2. Check the response
+# Look for:
+# - "content": contains <tool_call> tags? 
+# - "tool_calls": is it empty [] or populated?
+# - "finish_reason": is it "tool_calls" or "stop"?
 ```
 
-**Actual Response:**
+**What We Found:**
+
+With `qwen3_xml` parser:
 ```json
 {
-  "content": "<think>...</think>\n\n<tool_call>\n{\"name\": \"get_weather\", \"arguments\": {\"city\": \"Paris\"}}\n</tool_call>",
-  "tool_calls": []  // <-- EMPTY!
+  "content": "<think>...</think>\n<tool_call>{\"name\": \"get_weather\", \"arguments\": {\"city\": \"Tokyo\"}}</tool_call>",
+  "tool_calls": [],  // EMPTY! Parser failed to extract
+  "finish_reason": "stop"
 }
 ```
 
-### Root Cause
-The model IS generating correct tool call XML:
-```xml
-<tool_call>
-{"name": "get_weather", "arguments": {"city": "Paris"}}
-</tool_call>
-```
-
-But vLLM's parser returns `tool_calls: []` - the parser isn't extracting the tool call from the response!
-
-### Possible Causes
-1. **Parser mismatch**: `qwen3_xml` parser may not handle `<think>` tags before `<tool_call>`
-2. **vLLM version issue**: Parser implementation may have bugs
-3. **Model output format**: Model may not be generating the exact format the parser expects
-
-### Solution: Use `hermes` Parser Instead of `qwen3_xml`
-
-**The `hermes` parser correctly extracts tool calls!**
-
-```bash
-oc patch llminferenceservice qwen3-0-6b -n my-first-model --type='json' -p='[
-  {
-    "op": "replace",
-    "path": "/spec/template/containers/0/env/2/value",
-    "value": "--dtype=half --max-model-len=4096 --gpu-memory-utilization=0.85 --enforce-eager --enable-auto-tool-choice --tool-call-parser hermes"
-  }
-]'
-```
-
-**Before (qwen3_xml parser):**
-```json
-{
-  "content": "<tool_call>{\"name\": \"get_weather\", \"arguments\": {\"city\": \"Tokyo\"}}</tool_call>",
-  "tool_calls": []  // EMPTY - parser failed
-}
-```
-
-**After (hermes parser):**
+With `hermes` parser:
 ```json
 {
   "content": "<think>...</think>",
   "tool_calls": [
     {
       "id": "chatcmpl-tool-xxx",
-      "type": "function",
+      "type": "function", 
       "function": {
         "name": "get_weather",
         "arguments": "{\"city\": \"Tokyo\"}"
       }
     }
   ],
-  "finish_reason": "tool_calls"  // Properly detected!
+  "finish_reason": "tool_calls"  // Correctly detected!
 }
+```
+
+**Root Cause:** The `qwen3_xml` parser doesn't handle `<think>` tags that Qwen3 outputs before `<tool_call>` tags.
+
+**Solution:** Use `hermes` parser instead:
+```bash
+--tool-call-parser hermes
+```
+
+#### Parser Options Reference
+
+| Model Family | Recommended Parser | Notes |
+|--------------|-------------------|-------|
+| Qwen3 | `hermes` | Works with thinking tags |
+| Llama3 | `llama3_json` | JSON format |
+| Mistral | `mistral` | Mistral-specific format |
+| DeepSeek | `deepseek_v3` | DeepSeek format |
+| Generic | `hermes` | Most compatible |
+
+**Invalid Parser Error:**
+```
+KeyError: 'invalid tool call parser: qwen (chose from { hermes, llama3_json, mistral, ... })'
+```
+→ Use exact parser name from the supported list.
+
+---
+
+### Step ④ → ⑤ : LlamaStack to MCP Server
+
+#### Issue: MCP Server Not Connecting
+
+**Symptoms:**
+- "View tools" button is disabled in Playground
+- Lock icon in Auth column
+
+**Debugging Steps:**
+```bash
+# 1. Check LlamaStack logs for MCP connection
+oc logs <llama-pod> -n my-first-model | grep -i "mcp\|session"
+
+# Expected output when working:
+# INFO mcp.client.streamable_http: Received session ID: xxx
+# INFO mcp.client.streamable_http: Negotiated protocol version: 2025-06-18
+```
+
+**Common Causes:**
+
+1. **Authentication Required:**
+   - MCP server needs API token
+   - Click "Configure" button in Playground UI
+   - Enter token in "Access token" field
+
+2. **Server Unreachable:**
+   ```bash
+   # Test MCP server from cluster
+   oc run curl-test --rm -i --restart=Never --image=curlimages/curl -n my-first-model -- \
+     curl -v "https://mcp-server-url/mcp"
+   ```
+
+3. **Invalid URL in ConfigMap:**
+   ```bash
+   oc get configmap gen-ai-aa-mcp-servers -n redhat-ods-applications -o yaml
+   ```
+
+---
+
+### Step ⑤ : MCP Server Execution
+
+#### Issue: Tool Discovered But Not Executing
+
+**Symptoms:**
+- "View tools" button works and shows tools
+- Model tries to call tool
+- But no result returned
+
+**Debugging Steps:**
+```bash
+# Check LlamaStack logs during tool execution
+oc logs <llama-pod> -n my-first-model --tail=100 | grep -iE "tool|mcp|call|error"
+```
+
+**Common Causes:**
+- MCP server rate limiting
+- Tool parameters don't match schema
+- Network timeout
+
+---
+
+## Complete Troubleshooting Checklist
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│                        MCP Troubleshooting Checklist                                 │
+├─────────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                     │
+│  □ PLAYGROUND UI                                                                    │
+│    □ GenAI Studio enabled in OdhDashboardConfig?                                   │
+│    □ Model visible and selectable (not greyed out)?                                │
+│    □ MCP server checkbox enabled?                                                  │
+│                                                                                     │
+│  □ LLAMASTACK                                                                       │
+│    □ Pod running? (oc get pods | grep llama)                                       │
+│    □ Logs show "Received session ID"?                                              │
+│    □ No connection errors to vLLM?                                                 │
+│                                                                                     │
+│  □ VLLM                                                                             │
+│    □ Pod running with GPU? (1/1 Running)                                           │
+│    □ --enable-auto-tool-choice flag present?                                       │
+│    □ --tool-call-parser hermes (not qwen3_xml)?                                    │
+│    □ Direct API test returns tool_calls[] populated?                               │
+│                                                                                     │
+│  □ MCP SERVER                                                                       │
+│    □ Server URL correct in ConfigMap?                                              │
+│    □ Authentication token provided (if required)?                                  │
+│    □ "View tools" button enabled and shows tools?                                  │
+│    □ Server reachable from cluster?                                                │
+│                                                                                     │
+└─────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## Issue 5: Weather MCP Server Authentication
+## Useful Commands Reference
 
-### Symptom
-Weather MCP server requires API token but storing in ConfigMap is insecure.
+### Check All Components
+```bash
+# vLLM pod status
+oc get pods -n my-first-model | grep qwen
 
-### Bad Practice (Don't Do This)
+# LlamaStack pod status  
+oc get pods -n my-first-model | grep llama
+
+# vLLM logs
+oc logs <vllm-pod> -n my-first-model --tail=50
+
+# LlamaStack logs
+oc logs <llama-pod> -n my-first-model --tail=50
+
+# MCP ConfigMap
+oc get configmap gen-ai-aa-mcp-servers -n redhat-ods-applications -o yaml
+
+# vLLM command args
+oc get pod <vllm-pod> -n my-first-model -o jsonpath='{.spec.containers[0].args}'
+```
+
+### Direct API Testing
+```bash
+# Test vLLM tool calling
+oc run curl-test --rm -i --restart=Never --image=curlimages/curl -n my-first-model -- \
+  curl -k -s "https://<vllm-service>:8000/v1/chat/completions" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"<model-name>","messages":[{"role":"user","content":"test"}],"tools":[...],"max_tokens":300}'
+```
+
+---
+
+## Final Working Configuration
+
+### LLMInferenceService vLLM Args
+```
+--dtype=half 
+--max-model-len=4096 
+--gpu-memory-utilization=0.85 
+--enforce-eager 
+--enable-auto-tool-choice 
+--tool-call-parser hermes
+```
+
+### MCP Server ConfigMap
 ```yaml
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: gen-ai-aa-mcp-servers
+  namespace: redhat-ods-applications
 data:
   Weather: |
     {
-      "url": "https://weather-server.example.com/mcp?token=SECRET_TOKEN",  # BAD!
-      "description": "Weather API"
+      "url": "https://jiri-spilka--weather-mcp-server.apify.actor/mcp",
+      "description": "Get real-time weather data. Requires Apify API token."
     }
 ```
 
-### Best Practice
-1. Store URL without token in ConfigMap:
-```yaml
-Weather: |
-  {
-    "url": "https://weather-server.example.com/mcp",
-    "description": "Get real-time weather data. Requires Apify API token."
-  }
-```
-
-2. Enter token via Playground UI:
-   - Click "Configure" button
-   - Enter token in "Access token" field
-   - Token is stored securely (likely in Kubernetes Secret)
-
 ---
 
-## Useful Commands
+## Verified Working Example
 
-### Check vLLM Logs
-```bash
-oc logs <vllm-pod> -n <namespace> --tail=50
-```
-
-### Check LlamaStack Logs
-```bash
-oc logs <llamastack-pod> -n <namespace> --tail=50
-```
-
-### Test Tool Calling Directly
-```bash
-oc run curl-test --rm -i --restart=Never --image=curlimages/curl -n <namespace> -- \
-  curl -k -s "https://<vllm-service>:8000/v1/chat/completions" \
-  -H "Content-Type: application/json" \
-  -d '{"model":"<model-name>","messages":[{"role":"user","content":"test"}],"tools":[...]}'
-```
-
-### View MCP Session Connections
-```bash
-oc logs <llamastack-pod> -n <namespace> | grep -i "mcp\|session"
-```
-
----
-
-## Components Status Checklist
-
-| Component | How to Verify | Expected |
-|-----------|--------------|----------|
-| vLLM Model | `oc get pods` | 1/1 Running |
-| vLLM Tool Parser | Check logs for "Successfully import tool parser" | Parser loaded |
-| LlamaStack | `oc get pods` | 1/1 Running |
-| MCP Connection | Check logs for "Received session ID" | Session established |
-| MCP Tools | Click "View tools" in Playground | Tools listed |
-| Tool Execution | Check `tool_calls` array in API response | Contains tool calls |
-
----
-
-## Key Learnings
-
-1. **MCP requires proper vLLM configuration** - Tool calling must be explicitly enabled
-2. **Parser choice matters** - Different models need different parsers
-3. **Authentication is per-session** - Tokens entered in GUI are session-specific
-4. **Model size affects capability** - Smaller models (0.6B) may struggle with tool calling
-5. **Always test with direct API calls** - Helps isolate issues between layers
-
----
-
-## Status: ✅ FULLY RESOLVED
-
-### Solution Summary
-Use `--tool-call-parser hermes` instead of `qwen3_xml` for Qwen3 models.
-
-### All Tests Passed:
-- [x] `hermes` parser instead of `qwen3_xml` - **WORKS!**
-- [x] `tool_calls` array gets populated correctly
-- [x] **End-to-end MCP tool execution in Playground - SUCCESS!**
-
-### Verified Working Example
 **User Query:** "What is the weather of Kuala Lumpur?"
 
-**Model Response:**
+**Model Thinking:**
 ```
-<think> 
+<think>
 Okay, the user is asking about the weather in Kuala Lumpur. 
 Let me check the tools available. There's a function called get_current_weather...
+I need to call that function with the city parameter set to "Kuala Lumpur".
 </think>
-
-The weather in Kuala Lumpur is Overcast with a temperature of 25.4°C 
-and a relative humidity of 87%. The dew point temperature at 2 meters is 23.1°C.
 ```
 
 **Tool Call Made:**
@@ -308,17 +449,29 @@ and a relative humidity of 87%. The dew point temperature at 2 meters is 23.1°C
 }
 ```
 
-**Weather API Response:**
+**MCP Server Response:**
 ```
-Overcast, 25.4°C, Humidity: 87%, Dew point: 23.1°C
+The weather in Kuala Lumpur is Overcast with a temperature of 25.4°C, 
+Relative humidity at 2 meters: 87%, 
+Dew point temperature at 2 meters: 23.1
 ```
 
-### Key Finding
-The `qwen3_xml` parser doesn't properly handle the `<think>` tags that Qwen3 outputs before `<tool_call>` tags. The `hermes` parser correctly extracts tool calls regardless of thinking tags.
-
-### Final Configuration
-```yaml
-VLLM_ADDITIONAL_ARGS: "--dtype=half --max-model-len=4096 --gpu-memory-utilization=0.85 --enforce-eager --enable-auto-tool-choice --tool-call-parser hermes"
+**Final Response to User:**
 ```
+The weather in Kuala Lumpur is Overcast with a temperature of 25.4°C 
+and a relative humidity of 87%. The dew point temperature at 2 meters is 23.1°C.
+```
+
+---
+
+## Key Learnings
+
+1. **Parser matters most**: `qwen3_xml` ≠ `hermes` - wrong parser = empty tool_calls
+2. **Direct API testing is essential**: Always test vLLM directly to isolate issues
+3. **MCP auth is session-based**: Tokens must be re-entered after pod restarts
+4. **Check finish_reason**: `"tool_calls"` = working, `"stop"` = parser failed
+5. **Model thinks but doesn't act**: Usually means parser isn't extracting the call
+
+---
 
 *Last updated: January 11, 2026*
